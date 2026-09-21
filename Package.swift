@@ -23,7 +23,12 @@ let package = Package(
             name: "WeChatTweak",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser")
-            ]
-        )
+            ],
+            path: ".",
+            exclude: ["Runtime", "Tests", "README.md", "Makefile", "LICENSE", "CNAME", "_config.yml", "Package.resolved"],
+            sources: ["Sources/WeChatTweak"],
+            resources: [.copy("config.json")]
+        ),
+        .testTarget(name: "WeChatTweakTests", dependencies: ["WeChatTweak"], path: "Tests/WeChatTweakTests")
     ]
 )

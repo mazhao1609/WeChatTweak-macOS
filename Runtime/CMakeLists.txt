@@ -1,0 +1,26 @@
+# Created by Ma
+cmake_minimum_required(VERSION 3.15)
+project(WeChatTweakRuntime LANGUAGES C CXX OBJCXX ASM)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_OBJCXX_STANDARD 17)
+set(CMAKE_OSX_DEPLOYMENT_TARGET 12.0)
+include(FetchContent)
+# 固定 hook 引擎版本，避免上游更新改变指令重定位行为。
+set(DOBBY_DEBUG OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(DOBBY_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+set(Plugin.SymbolResolver ON CACHE BOOL "" FORCE)
+FetchContent_Declare(dobby
+    GIT_REPOSITORY https://github.com/jmpews/Dobby.git
+    GIT_TAG 5dfc8546954ce3b3198132ab13fddb89ee92cdd7)
+FetchContent_MakeAvailable(dobby)
+configure_file(${dobby_SOURCE_DIR}/LICENSE ${CMAKE_BINARY_DIR}/Dobby-LICENSE COPYONLY)
+add_library(WeChatTweak SHARED WeChatTweakRuntime.mm RecallEvent.mm RecallNotification.mm)
+target_compile_options(WeChatTweak PRIVATE -fobjc-arc -fvisibility=hidden)
+target_include_directories(WeChatTweak PRIVATE ${dobby_SOURCE_DIR}/include)
+target_link_libraries(WeChatTweak PRIVATE dobby_static "-framework Foundation" "-framework UserNotifications")
+set_target_properties(WeChatTweak PROPERTIES INSTALL_NAME_DIR "@rpath")
+add_executable(RuntimeTests ../Tests/RuntimeTests.mm RecallEvent.mm RecallNotification.mm)
+target_compile_options(RuntimeTests PRIVATE -fobjc-arc -UNDEBUG)
+target_include_directories(RuntimeTests PRIVATE ${dobby_SOURCE_DIR}/include)
+target_link_libraries(RuntimeTests PRIVATE dobby_static "-framework Foundation" "-framework UserNotifications")

@@ -80,6 +80,7 @@ struct Config: Decodable {
 
     let version: String
     let targets: [Target]
+    let runtime: RuntimeProfile?
 
     static func load(url: URL) async throws -> [Config] {
         if url.isFileURL {
@@ -96,7 +97,7 @@ struct Config: Decodable {
     }
 }
 
-private extension Data {
+extension Data {
     init?(hex: String) {
         let chars = Array(hex.utf8)
         guard chars.count % 2 == 0 else { return nil }

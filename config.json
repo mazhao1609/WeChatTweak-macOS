@@ -1,5 +1,25 @@
 [
   {
+    "version": "270100",
+    "targets": [],
+    "runtime": {
+      "version": "270100",
+      "image": "Contents/Resources/wechat.dylib",
+      "uuid": "0B9929BB-E55E-3513-B439-32375760BCA2",
+      "functions": {
+        "handleRevoke": {"addr": "30c53b4", "expected": "f657bda9f44f01a9fd7b02a9fd830091"},
+        "lookupMessage": {"addr": "309675c", "expected": "fc6fbba9f85f01a9f65702a9f44f03a9"},
+        "messageInit": {"addr": "aa4484", "expected": "f657bda9f44f01a9fd7b02a9fd830091"},
+        "messageDestroy": {"addr": "aa46dc", "expected": "f44fbea9fd7b01a9fd430091f30300aa"},
+        "setMessageType": {"addr": "4b6117c", "expected": "f657bda9f44f01a9fd7b02a9fd830091"},
+        "refreshMessage": {"addr": "4b64b60", "expected": "f44fbea9fd7b01a9fd430091f30300aa"},
+        "addLocalMessage": {"addr": "30c5d58", "expected": "ff0301d1f44f02a9fd7b03a9fdc30091"},
+        "notifyAdded": {"addr": "305d158", "expected": "fc6fbca9f65701a9f44f02a9fd7b03a9"},
+        "accountService": {"addr": "4518fe8", "expected": "08ec02f000bd44f9c0035fd6ffc300d1"}
+      }
+    }
+  },
+  {
     "version": "31927",
     "targets": [
       {
