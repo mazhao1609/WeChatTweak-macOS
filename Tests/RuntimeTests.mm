@@ -102,6 +102,16 @@ int main() {
         assert(event.serverID == UINT64_MAX);
         assert([event.replacement isEqualToString:@"小明撤回了一条消息"]);
         assert([WTRecallEvent eventWithXML:xmlWithMsgID()].serverID == UINT64_MAX);
+        NSString *groupXML = [@"wxid_friend:\n" stringByAppendingString:xml(@"<![CDATA[\"Ma\"撤回了一条消息]]>")];
+        WTRecallEvent *groupEvent = [WTRecallEvent eventWithXML:groupXML];
+        assert(groupEvent.serverID == UINT64_MAX);
+        assert([groupEvent.session isEqualToString:@"test@chatroom"]);
+        assert([groupEvent.replacement isEqualToString:@"\"Ma\"撤回了一条消息"]);
+        // 只接受协议封套；普通正文、DTD 和嵌套协议不得被当成撤回事件。
+        assert(![WTRecallEvent eventWithXML:[@"ordinary text:\n" stringByAppendingString:xml()]]);
+        assert(![WTRecallEvent eventWithXML:[@"wxid_friend:\nordinary text\n" stringByAppendingString:xml()]]);
+        assert((![WTRecallEvent eventWithXML:[@"<wrapper>" stringByAppendingFormat:@"%@</wrapper>", xml()]]));
+        assert(![WTRecallEvent eventWithXML:[@"wxid_friend:\n<!DOCTYPE sysmsg>" stringByAppendingString:xml()]]);
         assert([[WTRecallEvent eventWithXML:xml(@"A &amp; B 撤回了一条消息")].replacement hasPrefix:@"A & B"]);
         assert(![WTRecallEvent eventWithXML:[xml() stringByReplacingOccurrencesOfString:@"18446744073709551615" withString:@"18446744073709551616"]]);
         assert(![WTRecallEvent eventWithXML:@"<sysmsg type='other'/>"]);
@@ -134,6 +144,23 @@ int main() {
         assert(lastPrompt == "[已拦截] 小明撤回了一条消息" && lastNoticeID == 9876);
         assert(handleRevoke(nullptr, &incoming.value));
         assert(insertCalls == 1 && bannerCalls == 1);
+        // 模拟真实群聊封套：旧解析器会调用原函数删除消息；新实现只插入一条独立提示。
+        reset();
+        textField(&incoming.value, 0x130) = groupXML.UTF8String;
+        textField(&incoming.value, 0x18) = "test@chatroom";
+        assert(handleRevoke(nullptr, &incoming.value));
+        assert(originalCalls == 0 && insertCalls == 1 && notifyCalls == 1 && bannerCalls == 1);
+        assert(lastPrompt == "[已拦截] \"Ma\"撤回了一条消息");
+        // 同一事件改用无封套形式重放，也不能重复提示或删除原消息。
+        textField(&incoming.value, 0x130) = xml().UTF8String;
+        assert(handleRevoke(nullptr, &incoming.value));
+        assert(originalCalls == 0 && insertCalls == 1 && bannerCalls == 1);
+        reset(); fromSelf = true;
+        textField(&incoming.value, 0x130) = groupXML.UTF8String;
+        assert(!handleRevoke(nullptr, &incoming.value));
+        assert(originalCalls == 1 && insertCalls == 0 && bannerCalls == 0);
+        textField(&incoming.value, 0x130) = xml().UTF8String;
+        textField(&incoming.value, 0x18).clear();
         reset(); fromSelf = true;
         assert(!handleRevoke(nullptr, &incoming.value));
         assert(originalCalls == 1 && insertCalls == 0 && bannerCalls == 0);
@@ -205,7 +232,7 @@ int main() {
         assert(target(7) == 22);
         assert(DobbyDestroy(reinterpret_cast<void *>(hookTarget)) == 0);
         assert(target(7) == 21);
-        puts("Runtime tests passed: XML, preservation, self-revoke, missing message, deduplication, insertion failure.");
+        puts("Runtime tests passed: XML, group sender prefix, preservation, self-revoke, missing message, deduplication, insertion failure.");
         puts("Dobby hook / trampoline / restore passed.");
         puts("Notification foreground banner and host delegate forwarding passed.");
     }

@@ -5,7 +5,19 @@
 @implementation WTRecallEvent
 + (instancetype)eventWithXML:(NSString *)xml {
     if (!xml.length || xml.length > 1024 * 1024) return nil;
-    // 只解析撤回协议节点，不展开外部实体，也不通过截取字符串猜测 XML。
+    // 群聊正文可带“发送者 ID:\n”封套；只移除完整首行，不能从任意正文中搜索 XML。
+    if (![xml hasPrefix:@"<"]) {
+        NSRange separator = [xml rangeOfString:@":\n"];
+        if (separator.location != NSNotFound && separator.location > 0 && separator.location <= 512) {
+            NSString *sender = [xml substringToIndex:separator.location];
+            NSCharacterSet *invalid = [[NSCharacterSet characterSetWithCharactersInString:
+                @"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.@"] invertedSet];
+            if ([sender rangeOfCharacterFromSet:invalid].location == NSNotFound) {
+                xml = [xml substringFromIndex:NSMaxRange(separator)];
+            }
+        }
+    }
+    // 封套移除后仍严格解析完整 XML，不展开外部实体或接受普通聊天正文中的协议片段。
     NSXMLDocument *document = [[NSXMLDocument alloc] initWithXMLString:xml
         options:NSXMLNodeLoadExternalEntitiesNever error:nil];
     if (!document || document.DTD) return nil;

@@ -98,8 +98,18 @@ void (*notify)(NSString *, NSString *) = postNotification;
 
 bool handleRevoke(void *service, const Message *incoming) {
     @autoreleasepool {
-        WTRecallEvent *event = [WTRecallEvent eventWithXML:toNSString(textField(incoming, 0x130))];
-        if (!event) return api.handleRevoke(service, incoming);
+        NSString *content = toNSString(textField(incoming, 0x130));
+        WTRecallEvent *event = [WTRecallEvent eventWithXML:content];
+        if (!event) {
+            // 此入口本身处理撤回，解析失败必须留痕；不记录账号、昵称、消息 ID 或正文。
+            os_log_error(runtimeLog(), "撤回放行：协议解析失败，type=%u length=%lu senderPrefix=%d group=%d",
+                         field<uint32_t>(incoming, 0xc), (unsigned long)content.length,
+                         content && [content rangeOfString:@":\n"].location != NSNotFound,
+                         textField(incoming, 0x18).find("@chatroom") != std::string::npos ||
+                         textField(incoming, 0x30).find("@chatroom") != std::string::npos);
+            return api.handleRevoke(service, incoming);
+        }
+        os_log(runtimeLog(), "撤回协议已识别，群聊=%d", [event.session hasSuffix:@"@chatroom"]);
         const std::string session(event.session.UTF8String);
         // 群聊撤回在部分同步路径中把会话写入 Message 的另一侧字段；按协议会话、from、to 依次查询。
         std::string fromSession = textField(incoming, 0x18);
@@ -134,12 +144,18 @@ bool handleRevoke(void *service, const Message *incoming) {
         original.initialized = true;
 
         void *account = api.accountService();
-        if (!account) return api.handleRevoke(service, incoming);
+        if (!account) {
+            os_log_error(runtimeLog(), "撤回放行：账号服务不可用");
+            return api.handleRevoke(service, incoming);
+        }
         // 该版本虚表第 5 项返回当前账号名的 const std::string 引用。
         auto accountName = reinterpret_cast<const std::string &(*)(void *)>((*static_cast<void ***>(account))[5]);
         const std::string &ownName = accountName(account);
         // 自己发送的消息沿用微信原有撤回行为；群聊对方消息继续走保留流程。
-        if (textField(&original.value, 0x18) == ownName) return api.handleRevoke(service, incoming);
+        if (textField(&original.value, 0x18) == ownName) {
+            os_log(runtimeLog(), "撤回放行：原消息发送者为当前账号");
+            return api.handleRevoke(service, incoming);
+        }
 
         NSString *key = [NSString stringWithFormat:@"%@|%@|%llu", toNSString(ownName), event.session,
                          static_cast<unsigned long long>(event.serverID)];
@@ -181,7 +197,7 @@ bool handleRevoke(void *service, const Message *incoming) {
             if (localID && localID != field<uint32_t>(&original.value, 0xf4) && matches) {
                 // 新提示走新增消息通知，不能复用删除/替换原消息的撤回事件。
                 api.notifyAdded(service, &saved.value);
-                os_log_info(runtimeLog(), "撤回提示已新增，localID=%u", localID);
+                os_log(runtimeLog(), "撤回提示已新增，localID=%u", localID);
             } else {
                 os_log_error(runtimeLog(), "撤回提示入库结果无效，localID=%u type=%u contentMatches=%d",
                              localID, field<uint32_t>(&saved.value, 0xc), matches);
@@ -283,7 +299,7 @@ void install(const mach_header *header, intptr_t slide) {
         int result = DobbyHook(addresses["handleRevoke"], reinterpret_cast<void *>(handleRevoke),
                                reinterpret_cast<void **>(&api.handleRevoke));
         installed = result == 0;
-        os_log_info(runtimeLog(), "270100 arm64 撤回插件 v2 加载结果=%d", installed);
+        os_log(runtimeLog(), "270100 arm64 撤回插件 v3 加载结果=%d", installed);
     }
 }
 
