@@ -24,7 +24,7 @@
 
 namespace {
 int originalCalls = 0, insertCalls = 0, notifyCalls = 0, bannerCalls = 0;
-bool fromSelf = false, missing = false, insertFails = false, returnsOriginal = false;
+bool fromSelf = false, missing = false, insertFails = false, returnsOriginal = false, fallbackLookup = false;
 std::string own = "wxid_me";
 std::string lastPrompt;
 uint64_t lastNoticeID;
@@ -44,9 +44,10 @@ void destroyMessage(Message *m) {
     for (size_t offset : {0x18, 0x30, 0x130}) textField(m, offset).~basic_string();
 }
 OptionalMessage lookup(void *, const std::string *session, uint64_t id) {
-    assert(*session == "test@chatroom" && id == 18446744073709551615ULL);
+    assert(id == 18446744073709551615ULL);
     OptionalMessage result{};
-    if (missing) return result;
+    if (missing || (fallbackLookup && *session == "test@chatroom")) return result;
+    assert(*session == (fallbackLookup ? "fallback@chatroom" : "test@chatroom"));
     auto *m = reinterpret_cast<Message *>(&result);
     initMessage(m);
     textField(m, 0x18) = fromSelf ? own : "wxid_friend";
@@ -82,9 +83,13 @@ NSString *xml(NSString *replacement = @"<![CDATA[小明撤回了一条消息]]>"
     return [NSString stringWithFormat:@"<sysmsg type='revokemsg'><revokemsg><session>test@chatroom</session>"
         "<newmsgid>18446744073709551615</newmsgid><replacemsg>%@</replacemsg></revokemsg></sysmsg>", replacement];
 }
+NSString *xmlWithMsgID() {
+    return @"<sysmsg type='revokemsg'><revokemsg><session>test@chatroom</session>"
+            "<msgid>18446744073709551615</msgid><replacemsg>小明撤回了一条消息</replacemsg></revokemsg></sysmsg>";
+}
 void reset() {
     originalCalls = insertCalls = notifyCalls = bannerCalls = 0;
-    fromSelf = missing = insertFails = returnsOriginal = false;
+    fromSelf = missing = insertFails = returnsOriginal = fallbackLookup = false;
     expectedSortTime = 1700000000123ULL;
     completed = [NSMutableOrderedSet new];
     pending = [NSMutableSet new];
@@ -96,6 +101,7 @@ int main() {
         WTRecallEvent *event = [WTRecallEvent eventWithXML:xml()];
         assert(event.serverID == UINT64_MAX);
         assert([event.replacement isEqualToString:@"小明撤回了一条消息"]);
+        assert([WTRecallEvent eventWithXML:xmlWithMsgID()].serverID == UINT64_MAX);
         assert([[WTRecallEvent eventWithXML:xml(@"A &amp; B 撤回了一条消息")].replacement hasPrefix:@"A & B"]);
         assert(![WTRecallEvent eventWithXML:[xml() stringByReplacingOccurrencesOfString:@"18446744073709551615" withString:@"18446744073709551616"]]);
         assert(![WTRecallEvent eventWithXML:@"<sysmsg type='other'/>"]);
@@ -128,13 +134,18 @@ int main() {
         assert(lastPrompt == "[已拦截] 小明撤回了一条消息" && lastNoticeID == 9876);
         assert(handleRevoke(nullptr, &incoming.value));
         assert(insertCalls == 1 && bannerCalls == 1);
-        // 群聊中自己撤回的消息也保留原消息并追加提示，不能回到微信默认的删除流程。
         reset(); fromSelf = true;
-        assert(handleRevoke(nullptr, &incoming.value));
-        assert(originalCalls == 0 && insertCalls == 1 && notifyCalls == 1 && bannerCalls == 1);
+        assert(!handleRevoke(nullptr, &incoming.value));
+        assert(originalCalls == 1 && insertCalls == 0 && bannerCalls == 0);
         reset(); missing = true;
         assert(!handleRevoke(nullptr, &incoming.value));
         assert(originalCalls == 1 && insertCalls == 0);
+        // 群聊同步路径可能把可查询会话放在撤回消息对象字段中。
+        reset(); fallbackLookup = true;
+        textField(&incoming.value, 0x18) = "fallback@chatroom";
+        assert(handleRevoke(nullptr, &incoming.value));
+        assert(originalCalls == 0 && insertCalls == 1 && notifyCalls == 1);
+        textField(&incoming.value, 0x18).clear();
         reset(); insertFails = true;
         assert(handleRevoke(nullptr, &incoming.value));
         assert(originalCalls == 0 && insertCalls == 1 && notifyCalls == 0 && completed.count == 1 && bannerCalls == 1);

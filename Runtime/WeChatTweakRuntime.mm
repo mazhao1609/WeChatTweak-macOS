@@ -101,8 +101,34 @@ bool handleRevoke(void *service, const Message *incoming) {
         WTRecallEvent *event = [WTRecallEvent eventWithXML:toNSString(textField(incoming, 0x130))];
         if (!event) return api.handleRevoke(service, incoming);
         const std::string session(event.session.UTF8String);
-        OptionalMessage found = api.lookupMessage(service, &session, event.serverID);
-        if (found.bytes[0x278] != 1) return api.handleRevoke(service, incoming);
+        // 群聊撤回在部分同步路径中把会话写入 Message 的另一侧字段；按协议会话、from、to 依次查询。
+        std::string fromSession = textField(incoming, 0x18);
+        std::string toSession = textField(incoming, 0x30);
+        const std::string *candidates[] = {&session, &fromSession, &toSession};
+        OptionalMessage found{};
+        bool foundMessage = false;
+        NSUInteger usedCandidate = 0;
+        for (NSUInteger index = 0; index < 3; ++index) {
+            const std::string *candidate = candidates[index];
+            if (candidate->empty() ||
+                (index == 1 && *candidate == session) ||
+                (index == 2 && (*candidate == session || *candidate == fromSession))) continue;
+            found = api.lookupMessage(service, candidate, event.serverID);
+            if (found.bytes[0x278] == 1) {
+                foundMessage = true;
+                usedCandidate = index;
+                break;
+            }
+        }
+        if (!foundMessage) {
+            os_log_error(runtimeLog(), "撤回原消息查询失败，群聊=%d，已尝试会话字段=%lu",
+                         [event.session containsString:@"@chatroom"], (unsigned long)3);
+            return api.handleRevoke(service, incoming);
+        }
+        if (usedCandidate != 0) {
+            os_log_info(runtimeLog(), "撤回原消息使用 Message 会话字段查询，字段=%lu，群聊=%d",
+                        (unsigned long)usedCandidate, [event.session containsString:@"@chatroom"]);
+        }
         OwnedMessage original;
         memcpy(&original.value, found.bytes, sizeof(Message));
         original.initialized = true;
@@ -112,6 +138,8 @@ bool handleRevoke(void *service, const Message *incoming) {
         // 该版本虚表第 5 项返回当前账号名的 const std::string 引用。
         auto accountName = reinterpret_cast<const std::string &(*)(void *)>((*static_cast<void ***>(account))[5]);
         const std::string &ownName = accountName(account);
+        // 自己发送的消息沿用微信原有撤回行为；群聊对方消息继续走保留流程。
+        if (textField(&original.value, 0x18) == ownName) return api.handleRevoke(service, incoming);
 
         NSString *key = [NSString stringWithFormat:@"%@|%@|%llu", toNSString(ownName), event.session,
                          static_cast<unsigned long long>(event.serverID)];

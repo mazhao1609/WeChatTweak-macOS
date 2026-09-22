@@ -15,10 +15,22 @@
     NSArray *sessions = [node elementsForName:@"session"];
     NSArray *ids = [node elementsForName:@"newmsgid"];
     NSArray *replacements = [node elementsForName:@"replacemsg"];
-    if (sessions.count != 1 || ids.count != 1 || replacements.count != 1) return nil;
-    NSString *session = [sessions.firstObject stringValue];
-    NSString *replacement = [replacements.firstObject stringValue];
-    NSString *identifier = [ids.firstObject stringValue];
+    if (sessions.count != 1 || replacements.count < 1) return nil;
+    // 新版群聊同步偶尔只带 msgid；优先使用协议中的 newmsgid，缺失时兼容 msgid。
+    if (ids.count == 0) ids = [node elementsForName:@"msgid"];
+    if (ids.count != 1) return nil;
+    NSString *session = [[sessions.firstObject stringValue]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+    NSString *replacement = nil;
+    for (NSXMLElement *element in [replacements reverseObjectEnumerator]) {
+        NSString *value = element.stringValue;
+        if (value.length) {
+            replacement = value;
+            break;
+        }
+    }
+    NSString *identifier = [[ids.firstObject stringValue]
+        stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
     if (!session.length || session.length > 512 || !replacement.length || replacement.length > 8192 || !identifier.length) return nil;
     const char *start = identifier.UTF8String;
     uint64_t value = 0;
