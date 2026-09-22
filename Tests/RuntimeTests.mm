@@ -30,6 +30,9 @@ std::string lastPrompt;
 uint64_t lastNoticeID;
 uint64_t expectedSortTime = 1700000000123ULL;
 int (*originalTarget)(int);
+int diagnosticForwardCalls = 0;
+void *expectedSignal;
+const MessageBatch *expectedBatch;
 __attribute__((noinline, aligned(16384))) int hookTarget(int value) {
     asm volatile("nop\nnop\nnop\nnop\n" ::: "memory");
     return value * 3;
@@ -93,6 +96,76 @@ void reset() {
     expectedSortTime = 1700000000123ULL;
     completed = [NSMutableOrderedSet new];
     pending = [NSMutableSet new];
+}
+
+void testMessageDiagnostics() {
+    OwnedMessage message;
+    initMessage(&message.value);
+    message.initialized = true;
+    textField(&message.value, 0x18) = "wxid_friend";
+    textField(&message.value, 0x30) = own;
+    textField(&message.value, 0x130) = "ordinary message";
+    setField<uint32_t>(&message.value, 0xc, 1);
+    setField<uint32_t>(&message.value, 0xf4, 10);
+    setField<uint64_t>(&message.value, 0xf8, 123);
+    MessageBatch batch{&message.value, &message.value + 1, &message.value + 1};
+    expectedSignal = &message;
+    expectedBatch = &batch;
+    api.emitMessageEvent = [](void *signal, const MessageBatch *messages) {
+        assert(signal == expectedSignal && messages == expectedBatch);
+        ++diagnosticForwardCalls;
+    };
+    // 单条与批量入口投递相同消息时使用同一匿名编号，原始事件仍各转发一次。
+    Message before = message.value;
+    dispatchMessageEvent(expectedSignal, &batch, 0x305d1d4);
+    dispatchMessageEvent(expectedSignal, &batch, 0x307d738);
+    assert(diagnosticForwardCalls == 2 && diagnosticMessages.size() == 1);
+    auto first = diagnosticMessages.begin()->second;
+    assert(first.occurrences == 2 && first.firstLocalID == 10);
+    assert(memcmp(&before, &message.value, sizeof(Message)) == 0);
+    // 相同服务端 ID 却有不同本地 ID 时保留该差异，不抑制任何消息。
+    setField<uint32_t>(&message.value, 0xf4, 11);
+    dispatchMessageEvent(expectedSignal, &batch, 0x30aa000);
+    auto repeated = diagnosticMessages.begin()->second;
+    assert(diagnosticForwardCalls == 3 && repeated.token == first.token && repeated.occurrences == 3);
+    assert(repeated.firstLocalID != field<uint32_t>(&message.value, 0xf4));
+    // 图片正文和文字相同也不作为去重依据，不同服务端 ID 必须分配不同编号。
+    setField<uint32_t>(&message.value, 0xc, 3);
+    setField<uint64_t>(&message.value, 0xf8, 124);
+    auto image = observeAddedMessage(expectedSignal, &message.value);
+    assert(image.token != first.token && image.occurrences == 1);
+    assert(observeAddedMessage(expectedSignal, &message.value).occurrences == 2);
+    auto otherAccount = observeAddedMessage(nullptr, &message.value);
+    assert(otherAccount.token != image.token);
+    // 同一模板的更新事件不计为新增，空批次和未知布局也必须正常转发。
+    size_t count = diagnosticMessages.size();
+    dispatchMessageEvent(expectedSignal, &batch, 0x3080850);
+    assert(diagnosticMessages.size() == count && diagnosticForwardCalls == 4);
+    batch.end = batch.begin;
+    dispatchMessageEvent(expectedSignal, &batch, 0x307d738);
+    batch.end = reinterpret_cast<const Message *>(reinterpret_cast<uintptr_t>(batch.begin) + 1);
+    dispatchMessageEvent(expectedSignal, &batch, 0x307d738);
+    assert(diagnosticForwardCalls == 6 && diagnosticMessages.size() == count);
+    coreImageSlide = 0x100000000;
+    assert(addedEventSource(coreImageSlide + 0x307d738));
+    assert(!addedEventSource(coreImageSlide + 0x3080850));
+    coreImageSlide = 0;
+    // 无服务端 ID 时按本地 ID 观察；系统提示不进入普通消息诊断。
+    setField<uint64_t>(&message.value, 0xf8, 0);
+    auto local = observeAddedMessage(expectedSignal, &message.value);
+    assert(local.token && observeAddedMessage(expectedSignal, &message.value).token == local.token);
+    setField<uint32_t>(&message.value, 0xf4, 0);
+    assert(!observeAddedMessage(expectedSignal, &message.value).token);
+    setField<uint64_t>(&message.value, 0xf8, 125);
+    setField<uint32_t>(&message.value, 0xc, 10000);
+    assert(!observeAddedMessage(expectedSignal, &message.value).token);
+    // 长时间开启也只保留有限条内存记录。
+    setField<uint32_t>(&message.value, 0xc, 1);
+    for (uint64_t id = 1000; id < 1000 + diagnosticCapacity + 1; ++id) {
+        setField<uint64_t>(&message.value, 0xf8, id);
+        observeAddedMessage(expectedSignal, &message.value);
+    }
+    assert(diagnosticMessages.size() == diagnosticCapacity && diagnosticOrder.size() == diagnosticCapacity);
 }
 }
 
@@ -194,6 +267,17 @@ int main() {
         textField(&incoming.value, 0x130) = "<sysmsg type='other'/>";
         assert(!handleRevoke(nullptr, &incoming.value));
         assert(originalCalls == 1 && insertCalls == 0);
+        // 普通文字和图片不会插入消息或再次发送新增通知；每次只调用一次原函数。
+        for (uint32_t type : {1U, 3U}) {
+            reset();
+            setField<uint32_t>(&incoming.value, 0xc, type);
+            textField(&incoming.value, 0x130) = type == 1 ? "ordinary text" : "<msg><img/></msg>";
+            Message before = incoming.value;
+            assert(!handleRevoke(nullptr, &incoming.value));
+            assert(originalCalls == 1 && insertCalls == 0 && notifyCalls == 0 && bannerCalls == 0);
+            assert(memcmp(&before, &incoming.value, sizeof(Message)) == 0);
+        }
+        testMessageDiagnostics();
         [[NSUserDefaults standardUserDefaults] removeObjectForKey:@(cacheKey)];
         WTRecallNotificationDelegate *proxy = [WTRecallNotificationDelegate new];
         WTTestDelegate *host = [WTTestDelegate new];
@@ -235,5 +319,6 @@ int main() {
         puts("Runtime tests passed: XML, group sender prefix, preservation, self-revoke, missing message, deduplication, insertion failure.");
         puts("Dobby hook / trampoline / restore passed.");
         puts("Notification foreground banner and host delegate forwarding passed.");
+        puts("Message diagnostics: identity, local ID changes, forwarding, event filtering and bounded cache passed.");
     }
 }

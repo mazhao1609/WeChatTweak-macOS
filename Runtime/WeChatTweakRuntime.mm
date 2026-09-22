@@ -10,6 +10,9 @@
 #include <string>
 #include <cstring>
 #include <mutex>
+#include <map>
+#include <deque>
+#include <tuple>
 #include <unordered_map>
 #include <exception>
 
@@ -20,6 +23,9 @@ struct alignas(8) OptionalMessage { unsigned char bytes[0x280]; };
 static_assert(sizeof(std::string) == 24);
 static_assert(sizeof(Message) == 0x278);
 
+// 原生 vector<Message> 的三个指针，仅用于只读观察消息新增事件。
+struct MessageBatch { const Message *begin, *end, *capacity; };
+
 struct NativeAPI {
     bool (*handleRevoke)(void *, const Message *);
     OptionalMessage (*lookupMessage)(void *, const std::string *, uint64_t);
@@ -29,6 +35,7 @@ struct NativeAPI {
     void (*refreshMessage)(Message *);
     Message (*addLocalMessage)(void *, const Message *);
     void (*notifyAdded)(void *, const Message *);
+    void (*emitMessageEvent)(void *, const MessageBatch *);
     void *(*accountService)();
 } api;
 
@@ -37,6 +44,7 @@ NSMutableOrderedSet<NSString *> *completed;
 NSMutableSet<NSString *> *pending;
 bool notificationsEnabled = true;
 bool installed = false;
+uintptr_t coreImageSlide = 0;
 constexpr const char *cacheKey = "WeChatTweak.Revokes270100";
 
 os_log_t runtimeLog() {
@@ -68,6 +76,87 @@ struct OwnedMessage {
     bool initialized = false;
     ~OwnedMessage() { if (initialized) api.messageDestroy(&value); }
 };
+
+// 编号仅在本进程内有效，日志不包含账号、正文或原始消息 ID；缓存有界且不落盘。
+using DiagnosticKey = std::tuple<uintptr_t, std::string, std::string, uint64_t, uint32_t>;
+struct MessageObservation {
+    uint64_t token = 0;
+    uint32_t firstLocalID = 0;
+    uint64_t occurrences = 0;
+};
+std::mutex diagnosticMutex;
+std::map<DiagnosticKey, MessageObservation> diagnosticMessages;
+std::deque<DiagnosticKey> diagnosticOrder;
+uint64_t nextDiagnosticToken = 0;
+constexpr size_t diagnosticCapacity = 2048;
+
+MessageObservation observeAddedMessage(void *signal, const Message *message) {
+    uint32_t type = field<uint32_t>(message, 0xc);
+    uint32_t localID = field<uint32_t>(message, 0xf4);
+    uint64_t serverID = field<uint64_t>(message, 0xf8);
+    if ((type != 1 && type != 3) || (!localID && !serverID)) return {};
+    const auto &from = textField(message, 0x18);
+    const auto &to = textField(message, 0x30);
+    if (from.size() > 512 || to.size() > 512) return {};
+    DiagnosticKey key{reinterpret_cast<uintptr_t>(signal), from, to, serverID, serverID ? 0 : localID};
+    std::lock_guard<std::mutex> lock(diagnosticMutex);
+    auto found = diagnosticMessages.find(key);
+    if (found != diagnosticMessages.end()) {
+        ++found->second.occurrences;
+        return found->second;
+    }
+    MessageObservation observation{++nextDiagnosticToken, localID, 1};
+    diagnosticOrder.push_back(key);
+    diagnosticMessages.emplace(std::move(key), observation);
+    while (diagnosticOrder.size() > diagnosticCapacity) {
+        diagnosticMessages.erase(diagnosticOrder.front());
+        diagnosticOrder.pop_front();
+    }
+    return observation;
+}
+
+const char *addedEventSource(uintptr_t caller) {
+    // 此模板也用于更新等事件，只观察静态分析确认的三个“新增”调用点。
+    switch (caller - coreImageSlide) {
+        case 0x305d1d4: return "single";
+        case 0x307d738: return "batch";
+        case 0x30aa000: return "forward";
+        default: return nullptr;
+    }
+}
+
+void dispatchMessageEvent(void *signal, const MessageBatch *batch, uintptr_t caller) {
+    try {
+        const char *source = addedEventSource(caller);
+        if (source && batch) {
+            uintptr_t begin = reinterpret_cast<uintptr_t>(batch->begin);
+            uintptr_t end = reinterpret_cast<uintptr_t>(batch->end);
+            uintptr_t capacity = reinterpret_cast<uintptr_t>(batch->capacity);
+            // 遇到未知布局直接略过诊断，不影响原生事件投递。
+            if (begin && begin % alignof(Message) == 0 && end >= begin && end <= capacity &&
+                (end - begin) % sizeof(Message) == 0 && (end - begin) / sizeof(Message) <= 4096) {
+                for (uintptr_t cursor = begin; cursor < end; cursor += sizeof(Message)) {
+                    const auto *message = reinterpret_cast<const Message *>(cursor);
+                    MessageObservation observation = observeAddedMessage(signal, message);
+                    if (!observation.token) continue;
+                    os_log(runtimeLog(), "消息新增诊断：token=%llu type=%u occurrence=%llu sameLocalID=%d hasServerID=%d source=%{public}s",
+                           (unsigned long long)observation.token, field<uint32_t>(message, 0xc),
+                           (unsigned long long)observation.occurrences,
+                           observation.firstLocalID == field<uint32_t>(message, 0xf4),
+                           field<uint64_t>(message, 0xf8) != 0, source);
+                }
+            }
+        }
+    } catch (...) {
+        os_log_error(runtimeLog(), "消息诊断异常，继续投递原生事件");
+    }
+    // 诊断不能丢弃、修改或重复投递消息；包括重复候选在内，每次都原样调用一次。
+    api.emitMessageEvent(signal, batch);
+}
+
+void emitMessageEvent(void *signal, const MessageBatch *batch) {
+    dispatchMessageEvent(signal, batch, reinterpret_cast<uintptr_t>(__builtin_return_address(0)));
+}
 
 void postNotification(NSString *body, NSString *identifier) {
     if (!notificationsEnabled) return;
@@ -264,8 +353,13 @@ void install(const mach_header *header, intptr_t slide) {
         NSDictionary *functions = profile[@"functions"];
         if (![functions isKindOfClass:NSDictionary.class]) return;
         std::unordered_map<std::string, void *> addresses;
-        NSArray *names = @[@"handleRevoke", @"lookupMessage", @"messageInit", @"messageDestroy", @"setMessageType",
-                           @"refreshMessage", @"addLocalMessage", @"notifyAdded", @"accountService"];
+        NSData *settingsData = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"WeChatTweakSettings.json"]];
+        NSDictionary *settings = settingsData ? [NSJSONSerialization JSONObjectWithData:settingsData options:0 error:nil] : nil;
+        if (![settings isKindOfClass:NSDictionary.class]) settings = nil;
+        bool messageDiagnostics = [settings[@"messageDiagnostics"] isEqual:@YES];
+        NSMutableArray *names = [@[@"handleRevoke", @"lookupMessage", @"messageInit", @"messageDestroy", @"setMessageType",
+                                   @"refreshMessage", @"addLocalMessage", @"notifyAdded", @"accountService"] mutableCopy];
+        if (messageDiagnostics) [names addObject:@"emitMessageEvent"];
         for (NSString *name in names) {
             NSDictionary *entry = functions[name];
             if (![entry isKindOfClass:NSDictionary.class]) return;
@@ -292,14 +386,18 @@ void install(const mach_header *header, intptr_t slide) {
         NSArray *history = [[NSUserDefaults standardUserDefaults] arrayForKey:@(cacheKey)] ?: @[];
         completed = [NSMutableOrderedSet orderedSetWithArray:history];
         pending = [NSMutableSet new];
-        NSData *settingsData = [NSData dataWithContentsOfFile:[directory stringByAppendingPathComponent:@"WeChatTweakSettings.json"]];
-        NSDictionary *settings = settingsData ? [NSJSONSerialization JSONObjectWithData:settingsData options:0 error:nil] : nil;
         notificationsEnabled = ![settings[@"notifications"] isEqualToString:@"off"];
         if (notificationsEnabled) WTInstallRecallNotificationDelegate();
         int result = DobbyHook(addresses["handleRevoke"], reinterpret_cast<void *>(handleRevoke),
                                reinterpret_cast<void **>(&api.handleRevoke));
         installed = result == 0;
-        os_log(runtimeLog(), "270100 arm64 撤回插件 v3 加载结果=%d", installed);
+        os_log(runtimeLog(), "270100 arm64 撤回插件 v4 加载结果=%d", installed);
+        if (installed && messageDiagnostics) {
+            coreImageSlide = static_cast<uintptr_t>(slide);
+            int diagnosticResult = DobbyHook(addresses["emitMessageEvent"], reinterpret_cast<void *>(emitMessageEvent),
+                                             reinterpret_cast<void **>(&api.emitMessageEvent));
+            os_log(runtimeLog(), "消息新增诊断加载结果=%d", diagnosticResult == 0);
+        }
     }
 }
 

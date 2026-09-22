@@ -22,7 +22,11 @@ struct Command {
 
     static func backupURL(app: URL) -> URL { app.appendingPathExtension("wechattweak-backup") }
 
-    static func patch(app: URL, config: Config, runtimeLibrary: URL, dryRun: Bool, notifications: String) throws {
+    static func patch(app: URL, config: Config, runtimeLibrary: URL, dryRun: Bool, notifications: String,
+                      messageDiagnostics: Bool = false) throws {
+        if messageDiagnostics && config.runtime?.functions["emitMessageEvent"] == nil {
+            throw TweakFailure("当前配置不支持消息诊断，请使用随新程序打包的配置。")
+        }
         let executable = app.appendingPathComponent("Contents/MacOS/WeChat")
         if let profile = config.runtime {
             guard profile.version == config.version else { throw TweakFailure("运行时版本配置不一致。") }
@@ -57,7 +61,8 @@ struct Command {
             try fm.copyItem(at: runtimeLibrary, to: library)
             // 配置属于资源；放入 Frameworks 会被签名工具视为嵌套代码。
             try JSONEncoder().encode(profile).write(to: resources.appendingPathComponent("WeChatTweakProfile.json"))
-            try JSONSerialization.data(withJSONObject: ["notifications": notifications]).write(
+            try JSONSerialization.data(withJSONObject: ["notifications": notifications,
+                                                        "messageDiagnostics": messageDiagnostics]).write(
                 to: resources.appendingPathComponent("WeChatTweakSettings.json"))
             var binary = try MachOFile(url: stagedBinary)
             try binary.inject(library: loadPath, cpu: Config.Arch.arm64.cpu)

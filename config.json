@@ -15,6 +15,7 @@
         "refreshMessage": {"addr": "4b64b60", "expected": "f44fbea9fd7b01a9fd430091f30300aa"},
         "addLocalMessage": {"addr": "30c5d58", "expected": "ff0301d1f44f02a9fd7b03a9fdc30091"},
         "notifyAdded": {"addr": "305d158", "expected": "fc6fbca9f65701a9f44f02a9fd7b03a9"},
+        "emitMessageEvent": {"addr": "307ed5c", "expected": "fc6fbaa9fa6701a9f85f02a9f65703a9"},
         "accountService": {"addr": "4518fe8", "expected": "08ec02f000bd44f9c0035fd6ffc300d1"}
       }
     }

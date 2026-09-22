@@ -18,7 +18,12 @@ struct RuntimeProfile: Codable {
         guard image == "Contents/Resources/wechat.dylib" else { throw TweakFailure("核心库路径无效。") }
         let required = Set(["handleRevoke", "lookupMessage", "messageInit", "messageDestroy", "setMessageType",
                             "refreshMessage", "addLocalMessage", "notifyAdded", "accountService"])
-        guard version == "270100", Set(functions.keys) == required else { throw TweakFailure("运行时适配配置不完整。") }
+        // 诊断入口可选，旧配置仍可仅安装撤回插件。
+        let provided = Set(functions.keys)
+        guard version == "270100", required.isSubset(of: provided),
+              provided.isSubset(of: required.union(["emitMessageEvent"])) else {
+            throw TweakFailure("运行时适配配置不完整。")
+        }
         let file = try MachOFile(url: app.appendingPathComponent(image))
         let slice = try file.slice(cpu: Config.Arch.arm64.cpu)
         guard try file.uuid(in: slice) == uuid.uppercased() else { throw TweakFailure("核心库 UUID 不匹配，拒绝安装。") }

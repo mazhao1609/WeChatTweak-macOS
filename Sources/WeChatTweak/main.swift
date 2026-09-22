@@ -44,6 +44,9 @@ extension Tweak {
         @Option(help: "系统撤回通知：all 或 off；聊天内提示始终保留")
         var notifications = "all"
 
+        @Flag(help: "记录消息新增事件的匿名编号，用于排查重复消息，不记录正文")
+        var messageDiagnostics = false
+
         mutating func run() async throws {
             print("------ Version ------")
             let version = try await Command.version(app: options.app)
@@ -62,7 +65,8 @@ extension Tweak {
                 config: config,
                 runtimeLibrary: URL(fileURLWithPath: runtimeLibrary),
                 dryRun: dryRun,
-                notifications: notifications
+                notifications: notifications,
+                messageDiagnostics: messageDiagnostics
             )
             print("Done!")
 

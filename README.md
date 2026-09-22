@@ -63,6 +63,24 @@ make build
 log show --last 10m --info --predicate 'subsystem == "com.wechattweak.runtime"'
 ```
 
+### 普通消息重复诊断
+
+目前收到反馈：单聊没有撤回时也会偶发重复文字或图片，重新进入聊天仍显示两条，手机只有一条。
+原因尚未确定，不能把相同正文视为重复消息直接删除或屏蔽。v4 增加默认关闭的匿名诊断，
+不改变消息投递，不读取聊天数据库，也不清理已有记录。退出微信后更新并开启：
+
+```bash
+./wechattweak restore
+./wechattweak patch --message-diagnostics
+```
+
+重启后应看到“消息新增诊断加载结果=1”。再次出现重复时记录大致时间，再用上面的日志命令查看。
+日志只记录文字/图片新增事件的进程内匿名 `token`、类型、次数及本地 ID 是否相同，不记录正文、
+账号、昵称或原始消息 ID。`occurrence>1` 表示同一消息身份再次经过新增通知；
+`sameLocalID=0` 表示对应本地 ID 与首次观察不同，仍需结合接收路径判断，不能直接认定为重复入库。
+编号跨重启无关联，内存只保留最近 2048 个身份；它无法分析启用前的历史重复。
+诊断结束后退出微信，重新 `restore`、`patch`（不带该开关）即可关闭。
+
 默认配置随程序打包，不再自动下载上游配置；仍可用 `-c /path/to/config.json` 显式指定配置。
 分发本地构建产物时，请同时保留 `wechattweak`、`WeChatTweak_WeChatTweak.bundle`、`libWeChatTweak.dylib` 和 `Dobby-LICENSE`。
 安装在副本上完成注入和签名验证，成功后把原版保存在 `WeChat.app.wechattweak-backup`，再替换应用。
