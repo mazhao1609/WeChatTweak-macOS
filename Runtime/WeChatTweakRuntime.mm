@@ -112,7 +112,6 @@ bool handleRevoke(void *service, const Message *incoming) {
         // 该版本虚表第 5 项返回当前账号名的 const std::string 引用。
         auto accountName = reinterpret_cast<const std::string &(*)(void *)>((*static_cast<void ***>(account))[5]);
         const std::string &ownName = accountName(account);
-        if (textField(&original.value, 0x18) == ownName) return api.handleRevoke(service, incoming);
 
         NSString *key = [NSString stringWithFormat:@"%@|%@|%llu", toNSString(ownName), event.session,
                          static_cast<unsigned long long>(event.serverID)];

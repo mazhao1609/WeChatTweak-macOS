@@ -128,9 +128,10 @@ int main() {
         assert(lastPrompt == "[已拦截] 小明撤回了一条消息" && lastNoticeID == 9876);
         assert(handleRevoke(nullptr, &incoming.value));
         assert(insertCalls == 1 && bannerCalls == 1);
+        // 群聊中自己撤回的消息也保留原消息并追加提示，不能回到微信默认的删除流程。
         reset(); fromSelf = true;
-        assert(!handleRevoke(nullptr, &incoming.value));
-        assert(originalCalls == 1 && insertCalls == 0 && bannerCalls == 0);
+        assert(handleRevoke(nullptr, &incoming.value));
+        assert(originalCalls == 0 && insertCalls == 1 && notifyCalls == 1 && bannerCalls == 1);
         reset(); missing = true;
         assert(!handleRevoke(nullptr, &incoming.value));
         assert(originalCalls == 1 && insertCalls == 0);
